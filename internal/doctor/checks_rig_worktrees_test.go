@@ -69,7 +69,13 @@ func TestRigWorktreesCheck_PopulatedOverErrorThreshold_ReportsCountAndSize(t *te
 		t.Errorf("message = %q, must not claim absence over a populated directory", r.Message)
 	}
 	if r.FixHint == "" {
-		t.Error("FixHint empty; want a pointer at the prune order")
+		t.Error("FixHint empty; want a pointer at manual remediation")
+	}
+	// The hint must name a command that exists. An earlier draft pointed
+	// at `gc order run worktree-prune`, which is not a registered order —
+	// the operator would hit an error at the worst moment.
+	if strings.Contains(r.FixHint, "gc order run") {
+		t.Errorf("FixHint = %q, must not point at a nonexistent order", r.FixHint)
 	}
 }
 
@@ -176,12 +182,14 @@ func TestRigWorktreesCheck_MeasureFails_WarnsAndKeepsTheCount(t *testing.T) {
 	}
 }
 
-// Removal belongs to the worktree-prune order, which owns the safety
-// criterion. doctor --fix must not grow a second, weaker opinion.
+// Nothing reclaims this population automatically — the bead-worktree
+// reaper is scoped to .gc/worktrees/<rig>/ — so these trees are removed
+// by hand. doctor --fix must not grow its own opinion about when a
+// worktree is disposable.
 func TestRigWorktreesCheck_IsObservationOnly(t *testing.T) {
 	c := NewRigWorktreesCheck(config.Rig{Name: "r", Path: t.TempDir()}, config.DoctorConfig{})
 	if c.CanFix() {
-		t.Error("CanFix() = true, want false — removal is the prune order's job")
+		t.Error("CanFix() = true, want false — this check only observes")
 	}
 	if err := c.Fix(&CheckContext{}); err != nil {
 		t.Errorf("Fix() = %v, want nil no-op", err)

@@ -18,11 +18,14 @@ import (
 // gigabytes of per-bead trees was therefore invisible to every worktree
 // check doctor had, and the board came back green over it.
 //
-// Observation only. Removal is owned by the worktree-prune order, which
-// already carries the safety criterion (clean tree, no unpushed work,
-// `git worktree remove` without --force as the gate, in-flight detached
-// heads left alone); duplicating that here would give doctor --fix a
-// second, weaker opinion about when a worktree is disposable.
+// Observation only. No automatic reclamation covers this population
+// today: the bead-worktree reaper (cmd/gc/bead_worktree_reaper.go:179)
+// skips any worktree not strictly under .gc/worktrees/<rig>/, and there
+// is no rig-root equivalent yet, so these trees are removed by hand.
+// Doctor still does not remove them — deciding when a worktree is
+// disposable (clean tree, no unpushed work, no in-flight detached head)
+// is a judgment doctor --fix should not grow a second, weaker opinion
+// about.
 type RigWorktreesCheck struct {
 	rig config.Rig
 	cfg config.DoctorConfig
@@ -109,7 +112,7 @@ func (c *RigWorktreesCheck) Run(_ *CheckContext) *CheckResult {
 
 	warn := c.cfg.WorktreeRigWarnBytes()
 	errBytes := c.cfg.WorktreeRigErrorBytes()
-	pruneHint := "worktrees are reclaimed by the worktree-prune order; run `gc order run worktree-prune` or inspect with `git -C " + c.rig.Path + " worktree list`"
+	pruneHint := "no automatic reclamation covers this population — the bead-worktree reaper is scoped to .gc/worktrees/<rig>/; inspect with `git -C " + c.rig.Path + " worktree list` and remove individually with `git worktree remove <path>`"
 
 	switch {
 	case bytes >= errBytes:
@@ -130,8 +133,10 @@ func (c *RigWorktreesCheck) Run(_ *CheckContext) *CheckResult {
 	return r
 }
 
-// CanFix returns false — see the type comment: removal belongs to the
-// worktree-prune order, which owns the safety criterion.
+// CanFix returns false — see the type comment: nothing reclaims this
+// population automatically (the reaper is scoped to .gc/worktrees/<rig>/),
+// and doctor --fix must not take over the judgment of when a worktree is
+// disposable.
 func (c *RigWorktreesCheck) CanFix() bool { return false }
 
 // Fix is a no-op; see CanFix.
