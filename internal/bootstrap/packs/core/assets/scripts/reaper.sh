@@ -1272,7 +1272,7 @@ if [ -d "$CITY_BEADS_DIR" ]; then
             [ -n "$CITY_DB" ] || return 0
             command -v dolt_sql >/dev/null 2>&1 || return 0
             urls=$(dolt_sql -r csv -q "USE \`${CITY_DB}\`; SELECT url FROM dolt_backups;" 2>/dev/null \
-                | tail -n +2 | grep -v '^$') || urls=""
+                | tail -n +2 | tr -d '\r' | grep -v '^$') || urls=""
             while IFS= read -r url; do
                 url="${url%\"}"; url="${url#\"}"
                 # Only a file:// destination can be dated from here. A remote
@@ -1288,9 +1288,17 @@ if [ -d "$CITY_BEADS_DIR" ]; then
                 # Freshness is the newest object written into the backup, never
                 # `now`: if the syncing order stops, this ages out on its own
                 # and the gate correctly starts complaining again.
-                newest=$(find "$dir" -type f -printf '%T@\n' 2>/dev/null | sort -rn | head -1) || newest=""
+                # Reduced with awk rather than `sort -rn | head -1`: under
+                # `set -o pipefail`, `head` exiting early SIGPIPEs `sort`, the
+                # pipeline reports 141 and the `|| newest=""` then discards a
+                # correct answer. That happens once the listing exceeds the pipe
+                # buffer — a few hundred files — which is exactly the busy
+                # destination this gate exists to read.
+                newest=$(find "$dir" -type f -printf '%T@\n' 2>/dev/null \
+                    | awk '{ if ($1+0 > m+0) m=$1 } END { if (NR) print m }') || newest=""
                 if [ -z "$newest" ]; then
-                    newest=$(find "$dir" -type f -exec stat -f '%m' {} + 2>/dev/null | sort -rn | head -1) || newest=""
+                    newest=$(find "$dir" -type f -exec stat -f '%m' {} + 2>/dev/null \
+                        | awk '{ if ($1+0 > m+0) m=$1 } END { if (NR) print m }') || newest=""
                 fi
                 case "$newest" in ''|*[!0-9.]*) continue ;; esac
                 newest="${newest%%.*}"

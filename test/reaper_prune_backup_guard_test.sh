@@ -15,6 +15,7 @@
 #  11. Fresh legacy state + stale Dolt-native backup → bd IS called (second opinion never overrides)
 #  12. Dolt-native destination registered but empty  → bd NOT called, primary verdict stands
 #  13. Two destinations, remote listed first + file:// → the datable one is used
+#  14. Dolt-native destination holding many objects  → the newest is still found
 
 set -euo pipefail
 
@@ -58,14 +59,15 @@ ts_ago() {
     printf '%s%sZ\n' "$base" "$frac"
 }
 
-# touch_ago <path> <seconds_in_past>
+# touch_ago <path> <seconds_in_past> [extra_path...]
 # Backdates a file's mtime. The Dolt-native branch dates a backup by the newest
 # object inside it, so the fixture has to be a real mtime, not a JSON string.
 touch_ago() {
     local path="$1" age="$2" epoch
+    shift 2
     epoch=$(( $(date -u '+%s') - age ))
-    touch -d "@$epoch" "$path" 2>/dev/null \
-        || touch -t "$(date -u -r "$epoch" '+%Y%m%d%H%M.%S' 2>/dev/null)" "$path"
+    touch -d "@$epoch" "$path" "$@" 2>/dev/null \
+        || touch -t "$(date -u -r "$epoch" '+%Y%m%d%H%M.%S' 2>/dev/null)" "$path" "$@"
 }
 
 # run_prune_scenario <backup_age_seconds|"absent"|"malformed"> [max_age_seconds] [pipeline] [legacy_age] [frac] [dolt_native]
@@ -86,7 +88,9 @@ touch_ago() {
 #               "remote" — a DoltHub-style https destination, which carries no
 #               locally observable timestamp;
 #               "mixed:<seconds>" — two rows, an undatable remote listed FIRST
-#               and a file:// destination second.
+#               and a file:// destination second;
+#               "many:<seconds>" — a file:// destination holding ~1500 objects,
+#               only the newest of which was written that many seconds ago.
 #
 # Returns: <bd_called>|<anomaly_called>|<exit_status>|<anomaly_msg>
 run_prune_scenario() {
@@ -155,6 +159,20 @@ run_prune_scenario() {
                 touch_ago "$tmpdir/dolt-backup/manifest" "${dolt_native#mixed:}"
                 dest_rows="https://doltremoteapi.dolthub.com/example/city
 file://$tmpdir/dolt-backup"
+                ;;
+            many:*)
+                # Enough objects to overrun the pipe buffer, which is what makes
+                # `sort -rn | head -1` lose the answer. The bulk are backdated a
+                # further day, so only the maximum clears the threshold: a
+                # reduction that returns any OTHER object reads as stale and
+                # fails this case just as an empty one does.
+                local fresh="${dolt_native#many:}" obj
+                mkdir -p "$tmpdir/dolt-backup"
+                for obj in $(seq 1 1500); do : > "$tmpdir/dolt-backup/obj-$obj"; done
+                touch_ago "$tmpdir/dolt-backup/obj-1" "$(( fresh + 86400 ))" \
+                    "$tmpdir/dolt-backup"/obj-*
+                : > "$tmpdir/dolt-backup/manifest"
+                touch_ago "$tmpdir/dolt-backup/manifest" "$fresh"
                 ;;
             *)
                 mkdir -p "$tmpdir/dolt-backup"
@@ -374,6 +392,21 @@ if [ "$bd_called" = "yes" ] && [ "$anomaly_called" = "no" ]; then
     pass "T13: remote row first + fresh file:// row → bd called, no anomaly"
 else
     fail "T13: mixed destinations → expected bd=yes anomaly=no; got bd=$bd_called anomaly=$anomaly_called rc=$rc msg=$anomaly_msg"
+fi
+
+# ── T14: destination with many objects → newest is still found ──────────────
+# `sort -rn | head -1` returns 141 under pipefail once head exits early and
+# sort takes SIGPIPE, and `|| newest=""` then discards a correct answer.
+# Reproduced at ~1000 files; a busy backup destination easily exceeds that.
+result=$(run_prune_scenario "absent" "86400" "legacy" "absent" "" "many:60")
+bd_called=$(printf '%s' "$result" | cut -d'|' -f1)
+anomaly_called=$(printf '%s' "$result" | cut -d'|' -f2)
+rc=$(printf '%s' "$result" | cut -d'|' -f3)
+anomaly_msg=$(printf '%s' "$result" | cut -d'|' -f4-)
+if [ "$bd_called" = "yes" ] && [ "$anomaly_called" = "no" ]; then
+    pass "T14: dolt-native destination with ~1500 objects → newest found, bd called"
+else
+    fail "T14: dolt-native many objects → expected bd=yes anomaly=no; got bd=$bd_called anomaly=$anomaly_called rc=$rc msg=$anomaly_msg"
 fi
 
 [ "$FAILED" -eq 0 ] && exit 0 || exit 1
